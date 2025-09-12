@@ -69,9 +69,6 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
             try {
                 process.env.AI_GATEWAY_API_KEY = apiKey;
 
-                console.log('[VercelAIGateway] Messages being sent:', JSON.stringify(messages, null, 2));
-                console.log('[VercelAIGateway] Tools being registered:', Object.keys(options.tools || {}));
-
                 const { textStream } = streamText({
                     model: gateway(model.id),
                     messages: convertMessages(messages),
@@ -79,28 +76,11 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
                     abortSignal: abortController.signal,
                 });
 
-                console.log('[VercelAIGateway] StreamText initialized, starting to read textStream...');
-                let hasContent = false;
-                let chunkCount = 0;
-
                 for await (const textPart of textStream) {
-                    chunkCount++;
-                    console.log(`[VercelAIGateway] Received text chunk ${chunkCount}:`, textPart);
-
                     if (token.isCancellationRequested) {
-                        console.log('[VercelAIGateway] Cancellation requested, breaking from stream');
                         break;
                     }
-                    hasContent = true;
                     progress.report(new LanguageModelTextPart(textPart));
-                }
-
-                console.log(`[VercelAIGateway] Stream completed. hasContent: ${hasContent}, chunkCount: ${chunkCount}, cancelled: ${token.isCancellationRequested}`);
-
-                // If no content was streamed, report an error
-                if (!hasContent && !token.isCancellationRequested) {
-                    console.log('[VercelAIGateway] No content received from stream, reporting error');
-                    progress.report(new LanguageModelTextPart('No response was returned from the model.'));
                 }
 
             } catch (error) {
