@@ -1,0 +1,54 @@
+{
+  "name": "vercel-ai-vscode-extension",
+  "displayName": "Vercel AI",
+  "description": "VS Code extension that provides Vercel AI models via the Language Model API",
+  "version": "0.1.0",
+  "publisher": "vercel",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "vercel",
+        "displayName": "Vercel AI"
+      }
+    ],
+    "configuration": {
+      "title": "Vercel AI",
+      "properties": {
+        "vercelAI.apiKey": {
+          "type": "string",
+          "description": "OpenAI API key for Vercel AI integration",
+          "scope": "application"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "lint": "eslint src/**/*.ts",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@stylistic/eslint-plugin": "^5.3.1",
+    "@types/json-schema": "^7.0.0",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.104.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.3.0",
+    "typescript-eslint": "^8.43.0"
+  },
+  "dependencies": {
+    "ai": "^3.0.0"
+  }
+}
