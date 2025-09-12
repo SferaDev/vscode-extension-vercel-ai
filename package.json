@@ -1,9 +1,10 @@
 {
-  "name": "vercel-ai-vscode-extension",
-  "displayName": "Vercel AI",
+  "name": "vscode-extension-vercel-ai",
+  "displayName": "Vercel AI Gateway",
   "description": "VS Code extension that provides Vercel AI models via the Language Model API",
   "version": "0.1.0",
-  "publisher": "vercel",
+  "publisher": "SferaDev",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -11,44 +12,71 @@
     "AI",
     "Chat"
   ],
+  "keywords": [
+    "ai",
+    "vercel",
+    "chat",
+    "gpt",
+    "claude",
+    "gemini",
+    "llm",
+    "tools"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SferaDev/vscode-extension-vercel-ai"
+  },
+  "homepage": "https://github.com/SferaDev/vscode-extension-vercel-ai#readme",
+  "bugs": {
+    "url": "https://github.com/SferaDev/vscode-extension-vercel-ai/issues"
+  },
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguageModelChatProvider:vercelAiGateway"
+  ],
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "vercel",
-        "displayName": "Vercel AI"
+        "vendor": "vercelAiGateway",
+        "displayName": "Vercel AI Gateway"
       }
     ],
     "configuration": {
-      "title": "Vercel AI",
+      "title": "Vercel AI Gateway",
       "properties": {
-        "vercelAI.apiKey": {
+        "vercelAiGateway.apiKey": {
           "type": "string",
-          "description": "OpenAI API key for Vercel AI integration",
+          "description": "Vercel AI Gateway API key",
           "scope": "application"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
     "lint": "eslint src/**/*.ts",
-    "watch": "tsc -watch -p ./"
+    "build": "NODE_ENV=production bunchee ./src/extension.ts --format cjs --no-external",
+    "dev": "bunchee ./src/extension.ts --format cjs --watch",
+    "compile": "tsc -p ./",
+    "prepackage": "npm run build && npm run lint",
+    "package": "vsce package",
+    "publish": "vsce publish"
   },
   "devDependencies": {
     "@eslint/js": "^9.35.0",
     "@stylistic/eslint-plugin": "^5.3.1",
-    "@types/json-schema": "^7.0.0",
-    "@types/node": "^20.0.0",
+    "@types/json-schema": "^7.0.15",
+    "@types/node": "^24.3.2",
     "@types/vscode": "^1.104.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "eslint": "^8.0.0",
-    "typescript": "^5.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.43.0",
+    "@typescript-eslint/parser": "^8.43.0",
+    "@vscode/vsce": "^3.6.0",
+    "bunchee": "^6.6.0",
+    "eslint": "^9.35.0",
+    "typescript": "^5.9.2",
     "typescript-eslint": "^8.43.0"
   },
   "dependencies": {
-    "ai": "^3.0.0"
+    "@ai-sdk/gateway": "^1.0.22",
+    "ai": "^5.0.43"
   }
 }
