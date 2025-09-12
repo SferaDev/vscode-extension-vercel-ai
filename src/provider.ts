@@ -69,18 +69,31 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
             try {
                 process.env.AI_GATEWAY_API_KEY = apiKey;
 
+                const convertedMessages = convertMessages(messages);
+                if (convertedMessages.length === 0) {
+                    progress.report(new LanguageModelTextPart('No valid messages to process.'));
+                    return;
+                }
+
                 const { textStream } = streamText({
                     model: gateway(model.id),
-                    messages: convertMessages(messages),
+                    messages: convertedMessages,
                     tools: convertTools(options.tools, progress),
                     abortSignal: abortController.signal,
                 });
 
+                let hasContent = false;
                 for await (const textPart of textStream) {
+
                     if (token.isCancellationRequested) {
                         break;
                     }
+                    hasContent = true;
                     progress.report(new LanguageModelTextPart(textPart));
+                }
+
+                if (!hasContent && !token.isCancellationRequested) {
+                    progress.report(new LanguageModelTextPart(''));
                 }
 
             } catch (error) {

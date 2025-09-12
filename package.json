@@ -2,7 +2,7 @@
   "name": "vscode-extension-vercel-ai",
   "displayName": "Vercel AI Gateway",
   "description": "VS Code extension that provides Vercel AI models via the Language Model API",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "SferaDev",
   "license": "MIT",
   "engines": {

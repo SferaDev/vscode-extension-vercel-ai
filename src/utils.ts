@@ -19,10 +19,12 @@ export function convertMessageContent(content: LanguageModelInputPart[]): string
 }
 
 export function convertMessages(messages: Array<LanguageModelChatMessage>): Array<ModelMessage> {
-    return messages.map(msg => ({
-        role: ROLE_MAP[msg.role] || 'user',
-        content: convertMessageContent(msg.content)
-    }));
+    return messages
+        .map(msg => ({
+            role: ROLE_MAP[msg.role] || 'user',
+            content: convertMessageContent(msg.content)
+        }))
+        .filter(msg => msg.content.trim().length > 0);
 }
 
 export function convertTools(tools: readonly LanguageModelChatTool[] = [], progress: Progress<LanguageModelResponsePart>): ToolSet {
