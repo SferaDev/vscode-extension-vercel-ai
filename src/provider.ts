@@ -1,20 +1,24 @@
-import { gateway, streamText } from 'ai';
+import { gateway, jsonSchema, ModelMessage, streamText, tool, ToolSet } from 'ai';
+import * as vscode from 'vscode';
 import {
     CancellationToken,
     ExtensionContext,
     InputBoxOptions,
     LanguageModelChatInformation,
     LanguageModelChatMessage,
+    LanguageModelChatMessageRole,
     LanguageModelChatProvider,
+    LanguageModelChatToolMode,
     LanguageModelResponsePart,
     LanguageModelTextPart,
+    LanguageModelToolCallPart,
+    LanguageModelToolResultPart,
     Progress,
     ProvideLanguageModelChatResponseOptions,
     window
 } from 'vscode';
-import { API_KEY_SECRET } from './constants';
-import { ModelsClient } from './models';
-import { convertMessageContent, convertMessages, convertTools, estimateTokenCount } from './utils';
+import { API_KEY_SECRET } from "./constants";
+import { ModelsClient } from "./models";
 
 export class VercelAIChatModelProvider implements LanguageModelChatProvider {
     private modelsClient: ModelsClient;
@@ -43,82 +47,88 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
 
     async provideLanguageModelChatResponse(
         model: LanguageModelChatInformation,
-        messages: Array<LanguageModelChatMessage>,
+        messages: readonly LanguageModelChatMessage[],
         options: ProvideLanguageModelChatResponseOptions,
         progress: Progress<LanguageModelResponsePart>,
         token: CancellationToken
     ): Promise<void> {
         const apiKey = await this.getApiKey(false);
         if (!apiKey) {
-            progress.report(new LanguageModelTextPart('API key not configured.'));
-            return;
+            throw new Error("Vercel AI Gateway API key not found");
         }
 
+        const abortController = new AbortController();
+        const abortSubscription = token.onCancellationRequested(() => abortController.abort());
+
         try {
-            const abortController = new AbortController();
-            if (token.isCancellationRequested) {
-                return;
+            const tools: ToolSet = {};
+
+            for (const { name, description, inputSchema } of options.tools || []) {
+                tools[name] = tool({
+                    name,
+                    description,
+                    inputSchema: jsonSchema(inputSchema || { type: "object", properties: {} }),
+                    execute: async (input, { toolCallId }) => {
+                        progress.report(new LanguageModelToolCallPart(toolCallId, name, input));
+
+                        return { toolCallId, name, input };
+                    }
+                });
             }
 
-            const cancellationDisposable = token.onCancellationRequested(() => {
-                if (!abortController.signal.aborted) {
-                    abortController.abort();
-                }
+            process.env.AI_GATEWAY_API_KEY = apiKey;
+
+            const response = streamText({
+                model: gateway(model.id),
+                messages: convertMessages(messages),
+                tools,
+                toolChoice: options.toolMode === LanguageModelChatToolMode.Auto ? "auto" : "required",
+                temperature: (options.modelOptions?.temperature as number | undefined) ?? 0.7,
+                abortSignal: abortController.signal,
             });
 
-            try {
-                process.env.AI_GATEWAY_API_KEY = apiKey;
-
-                const convertedMessages = convertMessages(messages);
-                if (convertedMessages.length === 0) {
-                    progress.report(new LanguageModelTextPart('No valid messages to process.'));
-                    return;
-                }
-
-                const { textStream } = streamText({
-                    model: gateway(model.id),
-                    messages: convertedMessages,
-                    tools: convertTools(options.tools, progress),
-                    abortSignal: abortController.signal,
-                });
-
-                let hasContent = false;
-                for await (const textPart of textStream) {
-
-                    if (token.isCancellationRequested) {
+            for await (const chunk of response.toUIMessageStream()) {
+                switch (chunk.type) {
+                    case "text-delta":
+                        progress.report(new LanguageModelTextPart(chunk.delta));
+                        break;
+                    case "reasoning-delta": {
+                        const vsAny = vscode as unknown as Record<string, any>;
+                        const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
+                            | (new (text: string, id?: string, metadata?: unknown) => unknown)
+                            | undefined;
+                        if (ThinkingCtor && chunk.delta) {
+                            progress.report(
+                                new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
+                            );
+                        }
                         break;
                     }
-                    hasContent = true;
-                    progress.report(new LanguageModelTextPart(textPart));
                 }
-
-                if (!hasContent && !token.isCancellationRequested) {
-                    progress.report(new LanguageModelTextPart(''));
-                }
-
-            } catch (error) {
-                if (error instanceof Error && error.name === 'AbortError') {
-                    return;
-                }
-                throw error;
-            } finally {
-                cancellationDisposable.dispose();
             }
-        } catch (error) {
-            const errorMessage = `Vercel AI Gateway request failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-            progress.report(new LanguageModelTextPart(errorMessage));
+
+            progress.report(new LanguageModelTextPart(""));
+        } finally {
+            abortSubscription.dispose();
         }
     }
 
     async provideTokenCount(
         _model: LanguageModelChatInformation,
-        input: string | LanguageModelChatMessage,
+        text: string | LanguageModelChatMessage,
         _token: CancellationToken
     ): Promise<number> {
-        const text = typeof input === 'string'
-            ? input
-            : convertMessageContent(input.content);
-        return estimateTokenCount(text);
+        if (typeof text === "string") {
+            return Math.ceil(text.length / 4);
+        } else {
+            let totalTokens = 0;
+            for (const part of text.content) {
+                if (part instanceof LanguageModelTextPart) {
+                    totalTokens += Math.ceil(part.value.length / 4);
+                }
+            }
+            return totalTokens;
+        }
     }
 
 
@@ -160,4 +170,57 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
             await this.manageApiKey();
         }
     }
+}
+
+function convertMessages(
+    messages: readonly LanguageModelChatMessage[]
+): ModelMessage[] {
+    return messages.flatMap((msg) => {
+        const results: ModelMessage[] = [];
+        const role = msg.role === LanguageModelChatMessageRole.User ? 'user' : 'assistant';
+        const tools: Record<string, string> = {};
+
+        for (const part of msg.content) {
+            if (typeof part === 'object' && part !== null) {
+                if ('value' in part && typeof part.value === 'string') {
+                    // Text part
+                    results.push({ role, content: part.value });
+                } else if (part instanceof LanguageModelToolCallPart) {
+                    // Tool call part
+                    results.push({
+                        role: "assistant",
+                        content: [{
+                            type: "tool-call",
+                            toolName: part.name,
+                            toolCallId: part.callId,
+                            input: part.input
+                        }]
+                    });
+
+                    tools[part.callId] = part.name;
+                } else if (part instanceof LanguageModelToolResultPart) {
+                    // Extract text content from tool result
+                    const resultTexts = part.content
+                        .filter((resultPart): resultPart is { value: string } =>
+                            typeof resultPart === 'object' &&
+                            resultPart !== null &&
+                            'value' in resultPart
+                        )
+                        .map(resultPart => resultPart.value);
+
+                    results.push({
+                        role: "tool",
+                        content: [{
+                            type: "tool-result",
+                            toolCallId: part.callId,
+                            toolName: tools[part.callId] || "unknown",
+                            output: { type: "text", value: resultTexts.join(' ') }
+                        }]
+                    });
+                }
+            }
+        }
+
+        return results;
+    });
 }

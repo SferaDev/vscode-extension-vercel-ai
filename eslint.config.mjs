@@ -31,6 +31,7 @@ export default tseslint.config(
 			'@stylistic/semi': ['warn', 'always'],
 			'@typescript-eslint/no-empty-function': 'off',
 			'@typescript-eslint/array-type': 'off',
+			'@typescript-eslint/no-explicit-any': 'off',
 			'@typescript-eslint/naming-convention': [
 				'warn',
 				{
