@@ -47,7 +47,7 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
 
     async provideLanguageModelChatResponse(
         model: LanguageModelChatInformation,
-        messages: readonly LanguageModelChatMessage[],
+        chatMessages: readonly LanguageModelChatMessage[],
         options: ProvideLanguageModelChatResponseOptions,
         progress: Progress<LanguageModelResponsePart>,
         token: CancellationToken
@@ -78,36 +78,59 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
 
             process.env.AI_GATEWAY_API_KEY = apiKey;
 
-            const response = streamText({
-                model: gateway(model.id),
-                messages: convertMessages(messages),
-                tools,
-                toolChoice: options.toolMode === LanguageModelChatToolMode.Auto ? "auto" : "required",
-                temperature: (options.modelOptions?.temperature as number | undefined) ?? 0.7,
-                abortSignal: abortController.signal,
-            });
+            try {
+                const response = streamText({
+                    model: gateway(model.id),
+                    messages: convertMessages(chatMessages),
+                    toolChoice: options.toolMode === LanguageModelChatToolMode.Auto ? "auto" : "required",
+                    temperature: options.modelOptions?.temperature ?? 0.7,
+                    tools,
+                    abortSignal: abortController.signal,
+                });
 
-            for await (const chunk of response.toUIMessageStream()) {
-                switch (chunk.type) {
-                    case "text-delta":
-                        progress.report(new LanguageModelTextPart(chunk.delta));
-                        break;
-                    case "reasoning-delta": {
-                        const vsAny = vscode as unknown as Record<string, any>;
-                        const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
-                            | (new (text: string, id?: string, metadata?: unknown) => unknown)
-                            | undefined;
-                        if (ThinkingCtor && chunk.delta) {
-                            progress.report(
-                                new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
-                            );
+                for await (const chunk of response.toUIMessageStream()) {
+                    switch (chunk.type) {
+                        case "text-delta":
+                            progress.report(new LanguageModelTextPart(chunk.delta));
+                            break;
+                        case "reasoning-delta": {
+                            const vsAny = vscode as unknown as Record<string, any>;
+                            const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
+                                | (new (text: string, id?: string, metadata?: unknown) => unknown)
+                                | undefined;
+                            if (ThinkingCtor && chunk.delta) {
+                                progress.report(
+                                    new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
+                                );
+                            }
+                            break;
                         }
-                        break;
+                        case "error": {
+                            const errorMessage = (chunk as any).errorText || 'Unknown error occurred';
+                            progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
+                            break;
+                        }
+                        default:
+                            console.debug('[VercelAI] Ignored stream chunk type:', chunk.type, JSON.stringify(chunk, null, 2));
+                            progress.report(new LanguageModelTextPart(" "));
+                            break;
                     }
                 }
-            }
+            } catch (error) {
+                console.error('[VercelAI] Exception during streaming:', error);
 
-            progress.report(new LanguageModelTextPart(""));
+                let errorMessage = 'An unexpected error occurred';
+                if (error instanceof Error) {
+                    errorMessage = error.message;
+                } else if (typeof error === 'string') {
+                    errorMessage = error;
+                } else if (error && typeof error === 'object' && 'message' in error) {
+                    errorMessage = String(error.message);
+                }
+
+                progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
+                throw error;
+            }
         } finally {
             abortSubscription.dispose();
         }
@@ -175,7 +198,7 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
 function convertMessages(
     messages: readonly LanguageModelChatMessage[]
 ): ModelMessage[] {
-    return messages.flatMap((msg) => {
+    const result = messages.flatMap((msg) => {
         const results: ModelMessage[] = [];
         const role = msg.role === LanguageModelChatMessageRole.User ? 'user' : 'assistant';
         const tools: Record<string, string> = {};
@@ -208,19 +231,41 @@ function convertMessages(
                         )
                         .map(resultPart => resultPart.value);
 
-                    results.push({
-                        role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: part.callId,
-                            toolName: tools[part.callId] || "unknown",
-                            output: { type: "text", value: resultTexts.join(' ') }
-                        }]
-                    });
+                    if (resultTexts.length > 0) {
+                        results.push({
+                            role: "tool",
+                            content: [{
+                                type: "tool-result",
+                                toolCallId: part.callId,
+                                toolName: tools[part.callId] || "unknown",
+                                output: { type: "text", value: resultTexts.join(' ') }
+                            }]
+                        });
+                    }
                 }
             }
         }
 
+        // Ensure we always have at least one message with content
+        if (results.length === 0) {
+            console.debug('[VercelAI] Message had no valid content, creating placeholder');
+            results.push({ role, content: "" });
+        }
+
         return results;
+    }).filter(msg => {
+        // Filter out messages with empty or whitespace-only content
+        return typeof msg.content === 'string' ? msg.content.trim() :
+            Array.isArray(msg.content) ? msg.content.length > 0 : false;
     });
+
+    // Make sure all messages before the first "user" message are "system" and not "assistant"
+    const firstUserIndex = result.findIndex(msg => msg.role === 'user');
+    for (let i = 0; i < firstUserIndex; i++) {
+        if (result[i].role === 'assistant') {
+            result[i].role = 'system';
+        }
+    }
+
+    return result;
 }
