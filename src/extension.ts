@@ -19,6 +19,9 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     context.subscriptions.push(commandDisposable);
+
+    // Export auth provider for use by other components
+    return { authProvider };
 }
 
 export function deactivate() {

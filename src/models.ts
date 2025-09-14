@@ -23,7 +23,7 @@ interface ModelsResponse {
 
 interface ModelsCache {
     fetchedAt: number;
-    models: import('vscode').LanguageModelChatInformation[];
+    models: LanguageModelChatInformation[];
 }
 
 export class ModelsClient {

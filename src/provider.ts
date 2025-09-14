@@ -15,6 +15,7 @@ import {
     LanguageModelToolResultPart,
     Progress,
     ProvideLanguageModelChatResponseOptions,
+    authentication,
     window
 } from 'vscode';
 import { ModelsClient } from "./models";
@@ -23,7 +24,7 @@ import { VERCEL_AI_AUTH_PROVIDER_ID } from "./auth";
 export class VercelAIChatModelProvider implements LanguageModelChatProvider {
     private modelsClient: ModelsClient;
 
-    constructor(private context: ExtensionContext) {
+    constructor(private _context: ExtensionContext) {
         this.modelsClient = new ModelsClient();
     }
 
@@ -154,7 +155,7 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
 
     private async getApiKey(silent: boolean): Promise<string | undefined> {
         try {
-            const session = await vscode.authentication.getSession(
+            const session = await authentication.getSession(
                 VERCEL_AI_AUTH_PROVIDER_ID,
                 [],
                 { createIfNone: !silent, silent }
