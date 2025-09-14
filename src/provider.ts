@@ -4,7 +4,6 @@ import * as vscode from 'vscode';
 import {
     CancellationToken,
     ExtensionContext,
-    InputBoxOptions,
     LanguageModelChatInformation,
     LanguageModelChatMessage,
     LanguageModelChatMessageRole,
@@ -18,8 +17,8 @@ import {
     ProvideLanguageModelChatResponseOptions,
     window
 } from 'vscode';
-import { API_KEY_SECRET } from "./constants";
 import { ModelsClient } from "./models";
+import { VERCEL_AI_AUTH_PROVIDER_ID } from "./auth";
 
 export class VercelAIChatModelProvider implements LanguageModelChatProvider {
     private modelsClient: ModelsClient;
@@ -154,41 +153,19 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
 
 
     private async getApiKey(silent: boolean): Promise<string | undefined> {
-        let apiKey = await this.context.secrets.get(API_KEY_SECRET);
-
-        if (!apiKey && !silent) {
-            await this.promptForApiKey();
-            apiKey = await this.context.secrets.get(API_KEY_SECRET);
-        }
-
-        return apiKey;
-    }
-
-    async manageApiKey(): Promise<void> {
-        const options: InputBoxOptions = {
-            prompt: 'Enter your Vercel AI Gateway API key',
-            password: true,
-            placeHolder: 'vck_...',
-            ignoreFocusOut: true
-        };
-
-        const apiKey = await window.showInputBox(options);
-
-        if (apiKey) {
-            await this.context.secrets.store(API_KEY_SECRET, apiKey);
-            window.showInformationMessage('Vercel AI Gateway API key saved successfully!');
-        }
-    }
-
-    private async promptForApiKey(): Promise<void> {
-        const result = await window.showInformationMessage(
-            'Vercel AI Gateway API key is required to use Vercel AI models. Would you like to configure it now?',
-            'Configure API Key',
-            'Cancel'
-        );
-
-        if (result === 'Configure API Key') {
-            await this.manageApiKey();
+        try {
+            const session = await vscode.authentication.getSession(
+                VERCEL_AI_AUTH_PROVIDER_ID,
+                [],
+                { createIfNone: !silent, silent }
+            );
+            return session?.accessToken;
+        } catch (error) {
+            if (!silent) {
+                console.error('Failed to get authentication session:', error);
+                window.showErrorMessage('Failed to authenticate with Vercel AI Gateway. Please try again.');
+            }
+            return undefined;
         }
     }
 }
