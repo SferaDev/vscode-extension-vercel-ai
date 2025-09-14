@@ -1,4 +1,5 @@
-import { gateway, jsonSchema, ModelMessage, streamText, tool, ToolSet } from 'ai';
+import { createGatewayProvider } from '@ai-sdk/gateway';
+import { jsonSchema, ModelMessage, streamText, tool, ToolSet } from 'ai';
 import * as vscode from 'vscode';
 import {
     CancellationToken,
@@ -52,15 +53,17 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
         progress: Progress<LanguageModelResponsePart>,
         token: CancellationToken
     ): Promise<void> {
-        const apiKey = await this.getApiKey(false);
-        if (!apiKey) {
-            throw new Error("Vercel AI Gateway API key not found");
-        }
-
         const abortController = new AbortController();
         const abortSubscription = token.onCancellationRequested(() => abortController.abort());
 
         try {
+            const apiKey = await this.getApiKey(false);
+            if (!apiKey) {
+                throw new Error("Vercel AI Gateway API key not found");
+            }
+
+            const gateway = createGatewayProvider({ apiKey });
+
             const tools: ToolSet = {};
 
             for (const { name, description, inputSchema } of options.tools || []) {
@@ -76,61 +79,56 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
                 });
             }
 
-            process.env.AI_GATEWAY_API_KEY = apiKey;
+            const response = streamText({
+                model: gateway(model.id),
+                messages: convertMessages(chatMessages),
+                toolChoice: options.toolMode === LanguageModelChatToolMode.Auto ? "auto" : "required",
+                temperature: options.modelOptions?.temperature ?? 0.7,
+                tools,
+                abortSignal: abortController.signal,
+            });
 
-            try {
-                const response = streamText({
-                    model: gateway(model.id),
-                    messages: convertMessages(chatMessages),
-                    toolChoice: options.toolMode === LanguageModelChatToolMode.Auto ? "auto" : "required",
-                    temperature: options.modelOptions?.temperature ?? 0.7,
-                    tools,
-                    abortSignal: abortController.signal,
-                });
-
-                for await (const chunk of response.toUIMessageStream()) {
-                    switch (chunk.type) {
-                        case "text-delta":
-                            progress.report(new LanguageModelTextPart(chunk.delta));
-                            break;
-                        case "reasoning-delta": {
-                            const vsAny = vscode as unknown as Record<string, any>;
-                            const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
-                                | (new (text: string, id?: string, metadata?: unknown) => unknown)
-                                | undefined;
-                            if (ThinkingCtor && chunk.delta) {
-                                progress.report(
-                                    new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
-                                );
-                            }
-                            break;
+            for await (const chunk of response.toUIMessageStream()) {
+                switch (chunk.type) {
+                    case "text-delta":
+                        progress.report(new LanguageModelTextPart(chunk.delta));
+                        break;
+                    case "reasoning-delta": {
+                        const vsAny = vscode as unknown as Record<string, any>;
+                        const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
+                            | (new (text: string, id?: string, metadata?: unknown) => unknown)
+                            | undefined;
+                        if (ThinkingCtor && chunk.delta) {
+                            progress.report(
+                                new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
+                            );
                         }
-                        case "error": {
-                            const errorMessage = (chunk as any).errorText || 'Unknown error occurred';
-                            progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
-                            break;
-                        }
-                        default:
-                            console.debug('[VercelAI] Ignored stream chunk type:', chunk.type, JSON.stringify(chunk, null, 2));
-                            progress.report(new LanguageModelTextPart(" "));
-                            break;
+                        break;
                     }
+                    case "error": {
+                        const errorMessage = (chunk as any).errorText || 'Unknown error occurred';
+                        progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
+                        break;
+                    }
+                    default:
+                        console.debug('[VercelAI] Ignored stream chunk type:', chunk.type, JSON.stringify(chunk, null, 2));
+                        progress.report(new LanguageModelTextPart(" "));
+                        break;
                 }
-            } catch (error) {
-                console.error('[VercelAI] Exception during streaming:', error);
-
-                let errorMessage = 'An unexpected error occurred';
-                if (error instanceof Error) {
-                    errorMessage = error.message;
-                } else if (typeof error === 'string') {
-                    errorMessage = error;
-                } else if (error && typeof error === 'object' && 'message' in error) {
-                    errorMessage = String(error.message);
-                }
-
-                progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
-                throw error;
             }
+        } catch (error) {
+            console.error('[VercelAI] Exception during streaming:', error);
+
+            let errorMessage = 'An unexpected error occurred';
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            } else if (error && typeof error === 'object' && 'message' in error) {
+                errorMessage = String(error.message);
+            }
+
+            progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
         } finally {
             abortSubscription.dispose();
         }
