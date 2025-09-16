@@ -20,6 +20,7 @@ import {
 } from 'vscode';
 import { ModelsClient } from "./models";
 import { VERCEL_AI_AUTH_PROVIDER_ID } from "./auth";
+import { ERROR_MESSAGES } from './constants';
 
 export class VercelAIChatModelProvider implements LanguageModelChatProvider {
     private modelsClient: ModelsClient;
@@ -40,7 +41,7 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
         try {
             return await this.modelsClient.getModels(apiKey);
         } catch (error) {
-            console.error('Failed to fetch models from Vercel AI Gateway:', error);
+            console.error(ERROR_MESSAGES.MODELS_FETCH_FAILED, error);
             return [];
         }
     }
@@ -59,13 +60,12 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
         try {
             const apiKey = await this.getApiKey(false);
             if (!apiKey) {
-                throw new Error("Vercel AI Gateway API key not found");
+                throw new Error(ERROR_MESSAGES.API_KEY_NOT_FOUND);
             }
 
             const gateway = createGatewayProvider({ apiKey });
 
             const tools: ToolSet = {};
-
             for (const { name, description, inputSchema } of options.tools || []) {
                 tools[name] = tool({
                     name,
@@ -73,7 +73,6 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
                     inputSchema: jsonSchema(inputSchema || { type: "object", properties: {} }),
                     execute: async (input, { toolCallId }) => {
                         progress.report(new LanguageModelToolCallPart(toolCallId, name, input));
-
                         return { toolCallId, name, input };
                     }
                 });
@@ -94,40 +93,21 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
                         progress.report(new LanguageModelTextPart(chunk.delta));
                         break;
                     case "reasoning-delta": {
-                        const vsAny = vscode as unknown as Record<string, any>;
-                        const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
-                            | (new (text: string, id?: string, metadata?: unknown) => unknown)
-                            | undefined;
-                        if (ThinkingCtor && chunk.delta) {
-                            progress.report(
-                                new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
-                            );
-                        }
+                        this.handleReasoningDelta(chunk, progress);
                         break;
                     }
                     case "error": {
-                        const errorMessage = (chunk as any).errorText || 'Unknown error occurred';
-                        progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
+                        this.handleErrorChunk(chunk, progress);
                         break;
                     }
                     default:
-                        console.debug('[VercelAI] Ignored stream chunk type:', chunk.type, JSON.stringify(chunk, null, 2));
-                        progress.report(new LanguageModelTextPart(" "));
+                        this.handleUnknownChunk(chunk, progress);
                         break;
                 }
             }
         } catch (error) {
             console.error('[VercelAI] Exception during streaming:', error);
-
-            let errorMessage = 'An unexpected error occurred';
-            if (error instanceof Error) {
-                errorMessage = error.message;
-            } else if (typeof error === 'string') {
-                errorMessage = error;
-            } else if (error && typeof error === 'object' && 'message' in error) {
-                errorMessage = String(error.message);
-            }
-
+            const errorMessage = this.extractErrorMessage(error);
             progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
         } finally {
             abortSubscription.dispose();
@@ -141,15 +121,15 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
     ): Promise<number> {
         if (typeof text === "string") {
             return Math.ceil(text.length / 4);
-        } else {
-            let totalTokens = 0;
-            for (const part of text.content) {
-                if (part instanceof LanguageModelTextPart) {
-                    totalTokens += Math.ceil(part.value.length / 4);
-                }
-            }
-            return totalTokens;
         }
+
+        let totalTokens = 0;
+        for (const part of text.content) {
+            if (part instanceof LanguageModelTextPart) {
+                totalTokens += Math.ceil(part.value.length / 4);
+            }
+        }
+        return totalTokens;
     }
 
 
@@ -164,84 +144,123 @@ export class VercelAIChatModelProvider implements LanguageModelChatProvider {
         } catch (error) {
             if (!silent) {
                 console.error('Failed to get authentication session:', error);
-                window.showErrorMessage('Failed to authenticate with Vercel AI Gateway. Please try again.');
+                window.showErrorMessage(ERROR_MESSAGES.AUTH_FAILED);
             }
             return undefined;
         }
     }
+
+    private handleReasoningDelta(chunk: any, progress: Progress<LanguageModelResponsePart>): void {
+        const vsAny = vscode as unknown as Record<string, any>;
+        const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
+            | (new (text: string, id?: string, metadata?: unknown) => unknown)
+            | undefined;
+        if (ThinkingCtor && chunk.delta) {
+            progress.report(
+                new (ThinkingCtor as any)(chunk.delta) as unknown as LanguageModelResponsePart
+            );
+        }
+    }
+
+    private handleErrorChunk(chunk: any, progress: Progress<LanguageModelResponsePart>): void {
+        const errorMessage = chunk.errorText || 'Unknown error occurred';
+        progress.report(new LanguageModelTextPart(`\n\n**Error:** ${errorMessage}\n\n`));
+    }
+
+    private handleUnknownChunk(chunk: any, progress: Progress<LanguageModelResponsePart>): void {
+        console.debug('[VercelAI] Ignored stream chunk type:', chunk.type, JSON.stringify(chunk, null, 2));
+        progress.report(new LanguageModelTextPart(" "));
+    }
+
+    private extractErrorMessage(error: unknown): string {
+        if (error instanceof Error) {
+            return error.message;
+        }
+        if (typeof error === 'string') {
+            return error;
+        }
+        if (error && typeof error === 'object' && 'message' in error) {
+            return String(error.message);
+        }
+        return 'An unexpected error occurred';
+    }
 }
 
-function convertMessages(
-    messages: readonly LanguageModelChatMessage[]
-): ModelMessage[] {
-    const result = messages.flatMap((msg) => {
-        const results: ModelMessage[] = [];
-        const role = msg.role === LanguageModelChatMessageRole.User ? 'user' : 'assistant';
-        const tools: Record<string, string> = {};
+function convertMessages(messages: readonly LanguageModelChatMessage[]): ModelMessage[] {
+    const result = messages.flatMap(convertSingleMessage).filter(isValidMessage);
+    fixSystemMessages(result);
+    return result;
+}
 
-        for (const part of msg.content) {
-            if (typeof part === 'object' && part !== null) {
-                if ('value' in part && typeof part.value === 'string') {
-                    // Text part
-                    results.push({ role, content: part.value });
-                } else if (part instanceof LanguageModelToolCallPart) {
-                    // Tool call part
+function convertSingleMessage(msg: LanguageModelChatMessage): ModelMessage[] {
+    const results: ModelMessage[] = [];
+    const role = msg.role === LanguageModelChatMessageRole.User ? 'user' : 'assistant';
+    const tools: Record<string, string> = {};
+
+    for (const part of msg.content) {
+        if (typeof part === 'object' && part !== null) {
+            if (isTextPart(part)) {
+                results.push({ role, content: part.value });
+            } else if (part instanceof LanguageModelToolCallPart) {
+                results.push({
+                    role: "assistant",
+                    content: [{
+                        type: "tool-call",
+                        toolName: part.name,
+                        toolCallId: part.callId,
+                        input: part.input
+                    }]
+                });
+                tools[part.callId] = part.name;
+            } else if (part instanceof LanguageModelToolResultPart) {
+                const resultTexts = extractToolResultTexts(part);
+                if (resultTexts.length > 0) {
                     results.push({
-                        role: "assistant",
+                        role: "tool",
                         content: [{
-                            type: "tool-call",
-                            toolName: part.name,
+                            type: "tool-result",
                             toolCallId: part.callId,
-                            input: part.input
+                            toolName: tools[part.callId] || "unknown",
+                            output: { type: "text", value: resultTexts.join(' ') }
                         }]
                     });
-
-                    tools[part.callId] = part.name;
-                } else if (part instanceof LanguageModelToolResultPart) {
-                    // Extract text content from tool result
-                    const resultTexts = part.content
-                        .filter((resultPart): resultPart is { value: string } =>
-                            typeof resultPart === 'object' &&
-                            resultPart !== null &&
-                            'value' in resultPart
-                        )
-                        .map(resultPart => resultPart.value);
-
-                    if (resultTexts.length > 0) {
-                        results.push({
-                            role: "tool",
-                            content: [{
-                                type: "tool-result",
-                                toolCallId: part.callId,
-                                toolName: tools[part.callId] || "unknown",
-                                output: { type: "text", value: resultTexts.join(' ') }
-                            }]
-                        });
-                    }
                 }
             }
         }
+    }
 
-        // Ensure we always have at least one message with content
-        if (results.length === 0) {
-            console.debug('[VercelAI] Message had no valid content, creating placeholder');
-            results.push({ role, content: "" });
-        }
+    if (results.length === 0) {
+        console.debug('[VercelAI] Message had no valid content, creating placeholder');
+        results.push({ role, content: "" });
+    }
 
-        return results;
-    }).filter(msg => {
-        // Filter out messages with empty or whitespace-only content
-        return typeof msg.content === 'string' ? msg.content.trim() :
-            Array.isArray(msg.content) ? msg.content.length > 0 : false;
-    });
+    return results;
+}
 
-    // Make sure all messages before the first "user" message are "system" and not "assistant"
+function isTextPart(part: any): part is { value: string } {
+    return 'value' in part && typeof part.value === 'string';
+}
+
+function extractToolResultTexts(part: LanguageModelToolResultPart): string[] {
+    return part.content
+        .filter((resultPart): resultPart is { value: string } =>
+            typeof resultPart === 'object' &&
+            resultPart !== null &&
+            'value' in resultPart
+        )
+        .map(resultPart => resultPart.value);
+}
+
+function isValidMessage(msg: ModelMessage): boolean {
+    return typeof msg.content === 'string' ? msg.content.trim().length > 0 :
+        Array.isArray(msg.content) ? msg.content.length > 0 : false;
+}
+
+function fixSystemMessages(result: ModelMessage[]): void {
     const firstUserIndex = result.findIndex(msg => msg.role === 'user');
     for (let i = 0; i < firstUserIndex; i++) {
         if (result[i].role === 'assistant') {
             result[i].role = 'system';
         }
     }
-
-    return result;
 }
